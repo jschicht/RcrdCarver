@@ -6,7 +6,6 @@ Syntax is:
 RcrdCarver.exe /InputFile: /OutputPath:
 
 Examples
-RcrdCarver.exe /InputFile:c:\memdump.bin
 RcrdCarver.exe /InputFile:c:\unallocated.chunk /OutputPath:e:\temp
 
 If no input file is given as parameter, a fileopen dialog is launched. Output will default to program directory if omitted. Output is split in 3, in addition to a log file. Example output may look like:
