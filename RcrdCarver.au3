@@ -4,7 +4,7 @@
 #AutoIt3Wrapper_Change2CUI=y
 #AutoIt3Wrapper_Res_Comment=Extracts raw RCRD records
 #AutoIt3Wrapper_Res_Description=Extracts raw RCRD records
-#AutoIt3Wrapper_Res_Fileversion=1.0.0.0
+#AutoIt3Wrapper_Res_Fileversion=1.0.0.3
 #AutoIt3Wrapper_Res_requestedExecutionLevel=asInvoker
 #EndRegion ;**** Directives created by AutoIt3Wrapper_GUI ****
 #Include <WinAPIEx.au3>
@@ -13,9 +13,9 @@ Global Const $FILEsig = "46494c45"
 Global Const $INDXsig = "494E4458"
 Global Const $RCRDsig = "52435244"
 Global Const $RCRD_Size = 4096
-Global $File,$OutputPath
+Global $File,$OutputPath,$PageSize=4096
 
-ConsoleWrite("RcrdCarver v1.0.0.0" & @CRLF)
+ConsoleWrite("RcrdCarver v1.0.0.3" & @CRLF)
 
 _GetInputParams()
 
@@ -78,9 +78,9 @@ If $hFileOutFalsePositives = 0 Then
 EndIf
 
 $rBuffer = DllStructCreate("byte ["&$RCRD_Size&"]")
-$JumpSize = 512
-$SectorSize = $RCRD_Size
-$JumpForward = $RCRD_Size/$JumpSize
+$BigBuffSize = 512 * 1000
+$rBufferBig = DllStructCreate("byte ["&$BigBuffSize&"]")
+
 $NextOffset = 0
 $FalsePositivesCounter = 0
 $RecordsWithFixupsCounter = 0
@@ -88,37 +88,77 @@ $RecordsWithoutFixupsCounter = 0
 $nBytes = ""
 $Timerstart = TimerInit()
 Do
-	If IsInt(Mod(($NextOffset * $JumpSize),$FileSize)/1000000) Then ConsoleWrite(Round((($NextOffset * $JumpSize)/$FileSize)*100,2) & " %" & @CRLF)
-	_WinAPI_SetFilePointerEx($hFile, $NextOffset*$JumpSize, $FILE_BEGIN)
-	_WinAPI_ReadFile($hFile, DllStructGetPtr($rBuffer), $SectorSize, $nBytes)
+	If IsInt(Mod(($NextOffset),$FileSize)/1000000) Then ConsoleWrite(Round((($NextOffset)/$FileSize)*100,2) & " %" & @CRLF)
+	If Not _WinAPI_SetFilePointerEx($hFile, $NextOffset, $FILE_BEGIN) Then
+		_DebugOut("SetFilePointerEx error on offset " & $NextOffset & @CRLF)
+		Exit
+	EndIf
+	If Not _WinAPI_ReadFile($hFile, DllStructGetPtr($rBufferBig), $BigBuffSize, $nBytes) Then
+		_DebugOut("ReadFile error on offset " & $NextOffset & @CRLF)
+		Exit
+	EndIf
+	$DataChunkBig = DllStructGetData($rBufferBig, 1)
+
+	$OffsetTest = StringInStr($DataChunkBig,$RCRDsig)
+
+	If Not $OffsetTest Then
+		$NextOffset += $BigBuffSize
+		ContinueLoop
+	EndIf
+	If $NextOffset > 0 Then
+		If Mod($OffsetTest,2)=0 Then
+			;We can only consider bytes, not nibbles
+			$NextOffset += $NextOffset/2
+			ContinueLoop
+		EndIf
+		If $OffsetTest >= ($NextOffset*2) - ($PageSize*2) Then
+			$NextOffset += (($OffsetTest-3)/2)
+			ContinueLoop
+		EndIf
+	EndIf
+
+	$RCRDOffset = (($OffsetTest-3)/2)
+	If Not _WinAPI_SetFilePointerEx($hFile, $RCRDOffset+$NextOffset, $FILE_BEGIN) Then
+		_DebugOut("SetFilePointerEx error on offset " & $RCRDOffset+$NextOffset & @CRLF)
+		Exit
+	EndIf
+	If Not _WinAPI_ReadFile($hFile, DllStructGetPtr($rBuffer), $RCRD_Size, $nBytes) Then
+		_DebugOut("ReadFile error on offset " & $RCRDOffset+$NextOffset & @CRLF)
+		Exit
+	EndIf
 	$DataChunk = DllStructGetData($rBuffer, 1)
-;	ConsoleWrite("Record: " & $NextOffset & @CRLF)
+
 	If StringMid($DataChunk,3,8) <> $RCRDsig Then
-		$NextOffset+=1
+		_DebugOut("Error: This should not happen" & @CRLF)
+		_DebugOut("Look up 0x" & Hex(Int($RCRDOffset+$NextOffset)) & @CRLF)
+		_DebugOut(_HexEncode($DataChunk) & @CRLF)
+		$NextOffset += 1
 		ContinueLoop
 	EndIf
 
-	If Not _ValidateRcrdStructureWithFixups($DataChunk) Then ; Test failed. Trying to validate RCRD structure without caring for fixups
-		If Not _ValidateRcrdStructureWithoutFixups($DataChunk) Then ; RCRD structure seems bad. False positive
-			_DebugOut("False positive at 0x" & Hex(Int($NextOffset*$JumpSize)))
+	If Not _ValidateIndxStructureWithFixups($DataChunk) Then ; Test failed. Trying to validate RCRD structure without caring for fixups
+;		If @error Then _DebugOut("Error: " & @error & @CRLF)
+		If Not _ValidateIndxStructureWithoutFixups($DataChunk) Then ; RCRD structure seems bad. False positive
+;			If @error Then _DebugOut("Error: " & @error & @CRLF)
+			_DebugOut("False positive at 0x" & Hex(Int($RCRDOffset+$NextOffset)) & " ErrorCode: " & @error)
 			$FalsePositivesCounter+=1
-			$NextOffset+=1
-			$Written = _WinAPI_WriteFile($hFileOutFalsePositives, DllStructGetPtr($rBuffer), $SectorSize, $nBytes)
+			$NextOffset += $RCRDOffset + $RCRD_Size
+			$Written = _WinAPI_WriteFile($hFileOutFalsePositives, DllStructGetPtr($rBuffer), $RCRD_Size, $nBytes)
 			If $Written = 0 Then _DebugOut("WriteFile error on " & $OutFileFalsePositives & " : " & _WinAPI_GetLastErrorMessage() & @CRLF)
 			ContinueLoop
-		Else ; RCRD structure could be validated, although fixups failed. I am not aware of any normal system behaviour that would cause this..
-			$Written = _WinAPI_WriteFile($hFileOutWithoutFixups, DllStructGetPtr($rBuffer), $SectorSize, $nBytes)
+		Else ; RCRD structure could be validated, although fixups failed. This record may be from memory dump.
+			$Written = _WinAPI_WriteFile($hFileOutWithoutFixups, DllStructGetPtr($rBuffer), $RCRD_Size, $nBytes)
 			If $Written = 0 Then _DebugOut("WriteFile error on " & $OutFileWithoutFixups & " : " & _WinAPI_GetLastErrorMessage() & @CRLF)
 			$RecordsWithoutFixupsCounter+=1
 		EndIf
 	Else ; Fixups successfully verified and RCRD structure seems fine.
-		$Written = _WinAPI_WriteFile($hFileOutWithFixups, DllStructGetPtr($rBuffer), $SectorSize, $nBytes)
+		$Written = _WinAPI_WriteFile($hFileOutWithFixups, DllStructGetPtr($rBuffer), $RCRD_Size, $nBytes)
 		If $Written = 0 Then _DebugOut("WriteFile error on " & $OutFileWithFixups & " : " & _WinAPI_GetLastErrorMessage() & @CRLF)
 		$RecordsWithFixupsCounter+=1
 	EndIf
 
-	$NextOffset+=$JumpForward
-Until $NextOffset * $JumpSize >= $FileSize
+	$NextOffset += $RCRDOffset + $RCRD_Size
+Until $NextOffset >= $FileSize
 
 _DebugOut("Job took " & _WinAPI_StrFromTimeInterval(TimerDiff($Timerstart)))
 _DebugOut("Found records with fixups applied: " & $RecordsWithFixupsCounter)
@@ -174,7 +214,7 @@ Func _DebugOut($text, $var="")
    If $logfile Then FileWrite($logfile, $text)
 EndFunc
 
-Func _ValidateRcrdStructureWithFixups($Entry)
+Func _ValidateIndxStructureWithFixups($Entry)
 	Local $MaxLoops=100, $LocalCounter=0
 	$UpdSeqArrOffset = ""
 	$UpdSeqArrSize = ""
@@ -207,142 +247,81 @@ Func _ValidateRcrdStructureWithFixups($Entry)
 		EndIf
 		$Entry =  StringMid($Entry,1,1022) & $UpdSeqArrPart1 & StringMid($Entry,1027,1020) & $UpdSeqArrPart2 & StringMid($Entry,2051,1020) & $UpdSeqArrPart3 & StringMid($Entry,3075,1020) & $UpdSeqArrPart4 & StringMid($Entry,4099,1020) & $UpdSeqArrPart5 & StringMid($Entry,5123,1020) & $UpdSeqArrPart6 & StringMid($Entry,6147,1020) & $UpdSeqArrPart7 & StringMid($Entry,7171,1020) & $UpdSeqArrPart8
 	EndIf
+	$LocalOffset = 3
 
-	$last_lsn = StringMid($Entry,19,16)
-	$last_lsn = Dec(_SwapEndian($last_lsn),2)
-	If $last_lsn = 0 Then
-		_DebugOut("Error in $last_lsn: " & $last_lsn)
-		Return 0
-	EndIf
+	$last_lsn = Dec(_SwapEndian(StringMid($Entry,$LocalOffset+16,16)),2)
+;	ConsoleWrite("$last_lsn: " & $last_lsn & @crlf)
+	If $last_lsn = 0 Then Return SetError(1,0,0)
 
-	;$page_flags = "0x" & _SwapEndian(StringMid($Entry,35,8))
-	$page_flags = StringMid($Entry,35,8)
-	$page_flags = Dec(_SwapEndian($page_flags),2)
-	If $page_flags <> 0 And $page_flags <> 1 And $page_flags <> 3 And $page_flags <> 4294967295 Then
-		_DebugOut("Error in $page_flags: " & $page_flags)
-		Return 0
-	EndIf
+	$page_flags = Dec(_SwapEndian(StringMid($Entry,$LocalOffset+32,8)),2)
+;	ConsoleWrite("$page_flags: " & $page_flags & @crlf)
+	If $page_flags <> 0 And $page_flags <> 1 And $page_flags <> 3 And $page_flags <> 4294967295 Then Return SetError(2,0,0)
 
-	$page_count = Dec(_SwapEndian(StringMid($Entry,43,4)),2)
-	If Not ($page_count > 0 And $page_count < 65535) Then
-		_DebugOut("Error in $page_count: " & $page_count)
-		Return 0
-	EndIf
+	$page_count = Dec(_SwapEndian(StringMid($Entry,$LocalOffset+40,4)),2)
+;	ConsoleWrite("$page_count: " & $page_count & @crlf)
+	If $page_count = 65535 Then Return SetError(3,0,0)
 
-	$page_position = Dec(_SwapEndian(StringMid($Entry,47,4)),2)
-	If Not ($page_position > 0 And $page_position < 65535) Then
-		_DebugOut("Error in $page_position: " & $page_position)
-		Return 0
-	EndIf
+	$page_position = Dec(_SwapEndian(StringMid($Entry,$LocalOffset+44,4)),2)
+;	ConsoleWrite("$page_position: " & $page_position & @crlf)
+	If $page_position = 65535 Then Return SetError(4,0,0)
 
-	;$next_record_offset = "0x" & _SwapEndian(StringMid($Entry,51,4))
-	$next_record_offset = Dec(_SwapEndian(StringMid($Entry,51,4)),2)
-	If Mod($next_record_offset,8) Or $next_record_offset > 0x1000 Then
-		_DebugOut("Error in $next_record_offset: " & $next_record_offset)
-		Return 0
-	EndIf
+	$next_record_offset = Dec(_SwapEndian(StringMid($Entry,$LocalOffset+48,4)),2)
+;	ConsoleWrite("$next_record_offset: " & $next_record_offset & @crlf)
+	If $next_record_offset > 0x1000 Then Return SetError(5,0,0)
+	If Mod($next_record_offset,8) Then Return SetError(5,0,0)
 
-	;$page_unknown = "0x" & _SwapEndian(StringMid($Entry,55,12))
-	;$page_unknown = Dec(_SwapEndian(StringMid($Entry,55,12)),2)
-	$page_unknown = StringMid($Entry,55,12)
-	If $page_unknown <> "000000000000" And $page_unknown <> "FFFFFFFFFFFF" Then
-		_DebugOut("Error in $page_unknown: " & $page_unknown)
-		Return 0
-	EndIf
+	;$page_unknown = Dec(_SwapEndian(StringMid($Entry,$LocalOffset+52,12)),2)
+	$page_unknown = StringMid($Entry,$LocalOffset+52,12)
+;	ConsoleWrite("$page_unknown: " & $page_unknown & @crlf)
+	If $page_unknown <> "000000000000" And $page_unknown <> "FFFFFFFFFFFF" Then Return SetError(6,0,0)
 
-	$last_end_lsn = StringMid($Entry,67,16)
-	;$last_end_lsn = Dec(_SwapEndian($last_end_lsn),2)
-	If $last_end_lsn = "FFFFFFFFFFFFFFFF" Then
-		_DebugOut("Error in $last_end_lsn: " & $last_end_lsn)
-		Return 0
-	EndIf
+;	$last_end_lsn = Dec(StringMid($Entry,$LocalOffset+64,16),2)
+
+;	$UpdateSequenceArray = Dec(StringMid($Entry,$LocalOffset+80,36),2)
+
+;	$LastPartPadding = Dec(StringMid($Entry,$LocalOffset+116,12),2)
+;	If $LastPartPadding <> 0 Then Return SetError(7,0,0)
 
 	Return 1
 EndFunc
 
-Func _ValidateRcrdStructureWithoutFixups($Entry)
+Func _ValidateIndxStructureWithoutFixups($Entry)
 	Local $MaxLoops=100, $LocalCounter=0
 
-	$UpdSeqArrOffset = ""
-	$UpdSeqArrSize = ""
-	$UpdSeqArrOffset = StringMid($Entry, 11, 4)
-	$UpdSeqArrOffset = Dec(_SwapEndian($UpdSeqArrOffset),2)
-	If $UpdSeqArrOffset <> 40 Then Return 0
-	$UpdSeqArrSize = StringMid($Entry, 15, 4)
-	$UpdSeqArrSize = Dec(_SwapEndian($UpdSeqArrSize),2)
-	$UpdSeqArr = StringMid($Entry, 3 + ($UpdSeqArrOffset * 2), $UpdSeqArrSize * 2 * 2)
-	If $RCRD_Size = 4096 Then
-		Local $UpdSeqArrPart0 = StringMid($UpdSeqArr,1,4)
-		Local $UpdSeqArrPart1 = StringMid($UpdSeqArr,5,4)
-		Local $UpdSeqArrPart2 = StringMid($UpdSeqArr,9,4)
-		Local $UpdSeqArrPart3 = StringMid($UpdSeqArr,13,4)
-		Local $UpdSeqArrPart4 = StringMid($UpdSeqArr,17,4)
-		Local $UpdSeqArrPart5 = StringMid($UpdSeqArr,21,4)
-		Local $UpdSeqArrPart6 = StringMid($UpdSeqArr,25,4)
-		Local $UpdSeqArrPart7 = StringMid($UpdSeqArr,29,4)
-		Local $UpdSeqArrPart8 = StringMid($UpdSeqArr,33,4)
-		Local $RecordEnd1 = StringMid($Entry,1023,4)
-		Local $RecordEnd2 = StringMid($Entry,2047,4)
-		Local $RecordEnd3 = StringMid($Entry,3071,4)
-		Local $RecordEnd4 = StringMid($Entry,4095,4)
-		Local $RecordEnd5 = StringMid($Entry,5119,4)
-		Local $RecordEnd6 = StringMid($Entry,6143,4)
-		Local $RecordEnd7 = StringMid($Entry,7167,4)
-		Local $RecordEnd8 = StringMid($Entry,8191,4)
-;		If $UpdSeqArrPart1 <> $RecordEnd1 OR $UpdSeqArrPart2 <> $RecordEnd2 OR $UpdSeqArrPart3 <> $RecordEnd3 OR $UpdSeqArrPart4 <> $RecordEnd4 OR $UpdSeqArrPart5 <> $RecordEnd5 OR $UpdSeqArrPart6 <> $RecordEnd6 OR $UpdSeqArrPart7 <> $RecordEnd7 OR $UpdSeqArrPart8 <> $RecordEnd8 Then
-		If $UpdSeqArrPart1 <> $RecordEnd1 Then
-			Return 0
-		EndIf
-	EndIf
+	$LocalOffset = 3
 
-	$last_lsn = StringMid($Entry,19,16)
-	$last_lsn = Dec(_SwapEndian($last_lsn),2)
-	If $last_lsn = 0 Then
-		_DebugOut("Error in $last_lsn: " & $last_lsn)
-		Return 0
-	EndIf
+	$last_lsn = Dec(_SwapEndian(StringMid($Entry,$LocalOffset+16,16)),2)
+;	ConsoleWrite("$last_lsn: " & $last_lsn & @crlf)
+	If $last_lsn = 0 Then Return SetError(1,0,0)
 
-	;$page_flags = "0x" & _SwapEndian(StringMid($Entry,35,8))
-	$page_flags = StringMid($Entry,35,8)
-	$page_flags = Dec(_SwapEndian($page_flags),2)
-	If $page_flags <> 0 And $page_flags <> 1 And $page_flags <> 3 And $page_flags <> 4294967295 Then
-		_DebugOut("Error in $page_flags: " & $page_flags)
-		Return 0
-	EndIf
+	$page_flags = Dec(_SwapEndian(StringMid($Entry,$LocalOffset+32,8)),2)
+;	ConsoleWrite("$page_flags: " & $page_flags & @crlf)
+	If $page_flags <> 0 And $page_flags <> 1 And $page_flags <> 3 And $page_flags <> 4294967295 Then Return SetError(2,0,0)
 
-	$page_count = Dec(_SwapEndian(StringMid($Entry,43,4)),2)
-	If Not ($page_count > 0 And $page_count < 65535) Then
-		_DebugOut("Error in $page_count: " & $page_count)
-		Return 0
-	EndIf
+	$page_count = Dec(_SwapEndian(StringMid($Entry,$LocalOffset+40,4)),2)
+;	ConsoleWrite("$page_count: " & $page_count & @crlf)
+	If $page_count = 65535 Then Return SetError(3,0,0)
 
-	$page_position = Dec(_SwapEndian(StringMid($Entry,47,4)),2)
-	If Not ($page_position > 0 And $page_position < 65535) Then
-		_DebugOut("Error in $page_position: " & $page_position)
-		Return 0
-	EndIf
+	$page_position = Dec(_SwapEndian(StringMid($Entry,$LocalOffset+44,4)),2)
+;	ConsoleWrite("$page_position: " & $page_position & @crlf)
+	If $page_position = 65535 Then Return SetError(4,0,0)
 
-	;$next_record_offset = "0x" & _SwapEndian(StringMid($Entry,51,4))
-	$next_record_offset = Dec(_SwapEndian(StringMid($Entry,51,4)),2)
-	If Mod($next_record_offset,8) Or $next_record_offset > 0x1000 Then
-		_DebugOut("Error in $next_record_offset: " & $next_record_offset)
-		Return 0
-	EndIf
+	$next_record_offset = Dec(_SwapEndian(StringMid($Entry,$LocalOffset+48,4)),2)
+;	ConsoleWrite("$next_record_offset: " & $next_record_offset & @crlf)
+	If $next_record_offset > 0x1000 Then Return SetError(5,0,0)
+	If Mod($next_record_offset,8) Then Return SetError(5,0,0)
 
-	;$page_unknown = "0x" & _SwapEndian(StringMid($Entry,55,12))
-	;$page_unknown = Dec(_SwapEndian(StringMid($Entry,55,12)),2)
-	$page_unknown = StringMid($Entry,55,12)
-	If $page_unknown <> "000000000000" And $page_unknown <> "FFFFFFFFFFFF" Then
-		_DebugOut("Error in $page_unknown: " & $page_unknown)
-		Return 0
-	EndIf
+	;$page_unknown = Dec(_SwapEndian(StringMid($Entry,$LocalOffset+52,12)),2)
+	$page_unknown = StringMid($Entry,$LocalOffset+52,12)
+;	ConsoleWrite("$page_unknown: " & $page_unknown & @crlf)
+	If $page_unknown <> "000000000000" And $page_unknown <> "FFFFFFFFFFFF" Then Return SetError(6,0,0)
 
-	$last_end_lsn = StringMid($Entry,67,16)
-	;$last_end_lsn = Dec(_SwapEndian($last_end_lsn),2)
-	If $last_end_lsn = "FFFFFFFFFFFFFFFF" Then
-		_DebugOut("Error in $last_end_lsn: " & $last_end_lsn)
-		Return 0
-	EndIf
+;	$last_end_lsn = Dec(StringMid($Entry,$LocalOffset+64,16),2)
+
+;	$UpdateSequenceArray = Dec(StringMid($Entry,$LocalOffset+80,36),2)
+
+;	$LastPartPadding = Dec(StringMid($Entry,$LocalOffset+116,12),2)
+;	If $LastPartPadding <> 0 Then Return SetError(7,0,0)
 
 	Return 1
 EndFunc

@@ -1,6 +1,6 @@
 RcrdCarver
 
-This is a simple tool to dump individual RCRD records. It scans the input for the signature on each sector/512 bytes. Input must be a file.
+This is a simple tool to dump individual RCRD records. It scans the input for signatures in addition to record validations. Input must be a file.
 
 Syntax is:
 RcrdCarver.exe /InputFile: /OutputPath:
@@ -24,6 +24,12 @@ The test of the record structure is rather comprehensive, and the output quality
 
 
 Changelog:
+
+1.0.0.3
+Fixed bug that triggered infinite loop with certain data.
+
+1.0.0.2
+Great improvement in speed and quality. Default is now also to scan all bytes. Removed the old paramater /ScanAllBytes:.
 
 1.0.0.0:
 First version.
