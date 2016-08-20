@@ -4,7 +4,7 @@
 #AutoIt3Wrapper_Change2CUI=y
 #AutoIt3Wrapper_Res_Comment=Extracts raw RCRD records
 #AutoIt3Wrapper_Res_Description=Extracts raw RCRD records
-#AutoIt3Wrapper_Res_Fileversion=1.0.0.3
+#AutoIt3Wrapper_Res_Fileversion=1.0.0.4
 #AutoIt3Wrapper_Res_requestedExecutionLevel=asInvoker
 #EndRegion ;**** Directives created by AutoIt3Wrapper_GUI ****
 #Include <WinAPIEx.au3>
@@ -15,7 +15,7 @@ Global Const $RCRDsig = "52435244"
 Global Const $RCRD_Size = 4096
 Global $File,$OutputPath,$PageSize=4096
 
-ConsoleWrite("RcrdCarver v1.0.0.3" & @CRLF)
+ConsoleWrite("RcrdCarver v1.0.0.4" & @CRLF)
 
 _GetInputParams()
 
@@ -137,12 +137,11 @@ Do
 	EndIf
 
 	If Not _ValidateIndxStructureWithFixups($DataChunk) Then ; Test failed. Trying to validate RCRD structure without caring for fixups
-;		If @error Then _DebugOut("Error: " & @error & @CRLF)
 		If Not _ValidateIndxStructureWithoutFixups($DataChunk) Then ; RCRD structure seems bad. False positive
-;			If @error Then _DebugOut("Error: " & @error & @CRLF)
-			_DebugOut("False positive at 0x" & Hex(Int($RCRDOffset+$NextOffset)) & " ErrorCode: " & @error)
+			$ErrorCode = @error
+			_DebugOut("False positive at 0x" & Hex(Int($RCRDOffset+$NextOffset)) & " ErrorCode: " & $ErrorCode)
 			$FalsePositivesCounter+=1
-			$NextOffset += $RCRDOffset + $RCRD_Size
+			$NextOffset += $RCRDOffset + 1
 			$Written = _WinAPI_WriteFile($hFileOutFalsePositives, DllStructGetPtr($rBuffer), $RCRD_Size, $nBytes)
 			If $Written = 0 Then _DebugOut("WriteFile error on " & $OutFileFalsePositives & " : " & _WinAPI_GetLastErrorMessage() & @CRLF)
 			ContinueLoop

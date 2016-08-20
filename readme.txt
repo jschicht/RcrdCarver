@@ -21,15 +21,3 @@ Unallocated data chunks may contain RCRD records that can be easily extracted. S
 It is advised to check the log file generated. There will be verbose information written. Especially the false positives and their offsets can be found here, in addition to the separate output file containg all false positives.
 
 The test of the record structure is rather comprehensive, and the output quality is excellently divided in 3.
-
-
-Changelog:
-
-1.0.0.3
-Fixed bug that triggered infinite loop with certain data.
-
-1.0.0.2
-Great improvement in speed and quality. Default is now also to scan all bytes. Removed the old paramater /ScanAllBytes:.
-
-1.0.0.0:
-First version.

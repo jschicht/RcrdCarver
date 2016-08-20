@@ -1,0 +1,14 @@
+RcrdCarver Changelog
+
+1.0.0.4
+Fixed bug, that caused a page to be missed on scanning for every false positive.
+Fixed bug that caused error code not to be written in the log.
+
+1.0.0.3
+Fixed bug that triggered infinite loop with certain data.
+
+1.0.0.2
+Great improvement in speed and quality. Default is now also to scan all bytes. Removed the old paramater /ScanAllBytes:.
+
+1.0.0.0:
+First version.
